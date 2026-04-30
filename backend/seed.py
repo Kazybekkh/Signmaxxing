@@ -1,7 +1,7 @@
-"""Generate 53 demo invoices.
+"""Generate 57 demo invoices.
 
-40 obviously-fine, 7 borderline (large), 6 sketchy. After agent run we
-expect 47 auto-paid and 6 escalated."""
+44 obviously-fine, 7 borderline (large), 6 sketchy. After agent run we
+expect 51 auto-paid and 6 escalated."""
 
 from __future__ import annotations
 
@@ -111,21 +111,27 @@ def _due_date_in_future(days: int) -> str:
     return (datetime.now(timezone.utc) + timedelta(days=days)).date().isoformat()
 
 
+SMALL_END = 32  # idx 0..31  → 32 small subscriptions
+MED_END = 44  # idx 32..43 → 12 monthly usage invoices
+LARGE_END = 51  # idx 44..50 → 7 borderline-large annual renewals
+# idx 51..(51+len(SKETCHY)-1) → sketchy escalations
+
+
 def _build_invoice(idx: int) -> dict:
-    if idx < 30:
+    if idx < SMALL_END:
         vendor, domain, incorporated = random.choice(KNOWN_VENDORS_SMALL)
         amount = random.randint(15_00, 250_00)
         desc = f"Monthly subscription #{1000 + idx}"
-    elif idx < 40:
+    elif idx < MED_END:
         vendor, domain, incorporated = random.choice(KNOWN_VENDORS_MEDIUM)
         amount = random.randint(400_00, 2_400_00)
         desc = f"Usage invoice #{2000 + idx}"
-    elif idx < 47:
+    elif idx < LARGE_END:
         vendor, domain, incorporated = random.choice(KNOWN_VENDORS_MEDIUM)
         amount = random.randint(5_500_00, 18_000_00)
         desc = f"Annual contract renewal #{3000 + idx}"
     else:
-        sketchy = SKETCHY[idx - 47]
+        sketchy = SKETCHY[idx - LARGE_END]
 
         return {
             "id": f"INV-{idx+1:04d}",
@@ -166,7 +172,7 @@ def seed(reset: bool = True) -> int:
             conn.execute("DELETE FROM invoices")
             conn.execute("DELETE FROM agent_trace")
 
-        invoices = [_build_invoice(i) for i in range(47 + len(SKETCHY))]
+        invoices = [_build_invoice(i) for i in range(LARGE_END + len(SKETCHY))]
         for inv in invoices:
             conn.execute(
                 """
