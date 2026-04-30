@@ -41,19 +41,28 @@ let toastEl: HTMLDivElement;
 let mouseControls: MouseControls;
 
 type ControllerSlot = {
+  index: 0 | 1;
   controller: THREE.Group;
   grip: THREE.Group;
   raycaster: THREE.Raycaster;
   hovered: InvoiceCardObject | null;
   grabbed: InvoiceCardObject | null;
-  squeezeStart: number; // 0 = not squeezing
-  flickAccum: number;
-  prevQuat: THREE.Quaternion;
+  approveHoldStart: number; // unix ms when A/X went down (0 = not held)
+  rejectHoldStart: number;
+  buttonsPrev: boolean[]; // edge-detection
 };
 const slots: ControllerSlot[] = [];
 
-const APPROVE_HOLD_MS = 1100;
-const REJECT_FLICK_THRESHOLD = 1.6; // radians/sec downward
+const APPROVE_HOLD_MS = 800;
+const REJECT_HOLD_MS = 800;
+
+// xr-standard gamepad mapping (Quest / Zapbox / Index / Pico):
+// 0 = trigger, 1 = squeeze (grip), 3 = thumbstick press,
+// 4 = A (right) / X (left), 5 = B (right) / Y (left)
+const BTN_TRIGGER = 0;
+const BTN_GRIP = 1;
+const BTN_PRIMARY = 4; // A or X
+const BTN_SECONDARY = 5; // B or Y
 
 // ---------------------------------------------------------------------------
 // Boot
@@ -170,17 +179,16 @@ function setupControllers(): void {
   controller0.add(pointerLine);
   controller1.add(pointerLine2);
 
-  slots.push(makeSlot(controller0, controllerGrip0));
-  slots.push(makeSlot(controller1, controllerGrip1));
+  slots.push(makeSlot(0, controller0, controllerGrip0));
+  slots.push(makeSlot(1, controller1, controllerGrip1));
 
+  // Trigger = grab/release the card under the laser pointer.
+  // Grip = also release (some users squeeze grip instead of trigger).
+  // A/X = approve (held). B/Y = reject (held).
   bindXrEvent(controller0, "selectstart", () => onSelectStart(slots[0]!));
   bindXrEvent(controller0, "selectend", () => onSelectEnd(slots[0]!));
-  bindXrEvent(controller0, "squeezestart", () => onSqueezeStart(slots[0]!));
-  bindXrEvent(controller0, "squeezeend", () => onSqueezeEnd(slots[0]!));
   bindXrEvent(controller1, "selectstart", () => onSelectStart(slots[1]!));
   bindXrEvent(controller1, "selectend", () => onSelectEnd(slots[1]!));
-  bindXrEvent(controller1, "squeezestart", () => onSqueezeStart(slots[1]!));
-  bindXrEvent(controller1, "squeezeend", () => onSqueezeEnd(slots[1]!));
 }
 
 function bindXrEvent(
@@ -195,16 +203,21 @@ function bindXrEvent(
   }).addEventListener(ev, fn);
 }
 
-function makeSlot(controller: THREE.Group, grip: THREE.Group): ControllerSlot {
+function makeSlot(
+  index: 0 | 1,
+  controller: THREE.Group,
+  grip: THREE.Group,
+): ControllerSlot {
   return {
+    index,
     controller,
     grip,
     raycaster: new THREE.Raycaster(),
     hovered: null,
     grabbed: null,
-    squeezeStart: 0,
-    flickAccum: 0,
-    prevQuat: new THREE.Quaternion(),
+    approveHoldStart: 0,
+    rejectHoldStart: 0,
+    buttonsPrev: [],
   };
 }
 
@@ -412,44 +425,77 @@ function escapeHtml(s: string): string {
 // ---------------------------------------------------------------------------
 
 const tmpQuat = new THREE.Quaternion();
-const tmpEuler = new THREE.Euler();
-let lastFrameTime = performance.now();
+
+function readGamepad(slot: ControllerSlot): Gamepad | null {
+  const session = renderer.xr.getSession?.();
+  if (!session) return null;
+  const sources = session.inputSources;
+  // Pair source by handedness when available, else by index.
+  const desired = slot.index === 0 ? "right" : "left";
+  for (const src of sources) {
+    if (src.handedness === desired && src.gamepad) return src.gamepad;
+  }
+  // Fallback: positional
+  let i = 0;
+  for (const src of sources) {
+    if (src.gamepad) {
+      if (i === slot.index) return src.gamepad;
+      i++;
+    }
+  }
+  return null;
+}
 
 function updateController(slot: ControllerSlot, now: number): void {
-  const dt = Math.max(0.001, (now - lastFrameTime) / 1000);
-  lastFrameTime = now;
   const { controller, raycaster } = slot;
 
-  controller.getWorldQuaternion(tmpQuat);
-  const angVel = quatAngularVelocity(slot.prevQuat, tmpQuat, dt);
-  slot.prevQuat.copy(tmpQuat);
+  // Poll gamepad face buttons for explicit, labeled approve/reject.
+  const pad = readGamepad(slot);
+  if (pad && slot.grabbed) {
+    const approvePressed = !!pad.buttons[BTN_PRIMARY]?.pressed;
+    const rejectPressed = !!pad.buttons[BTN_SECONDARY]?.pressed;
+
+    if (approvePressed) {
+      if (slot.approveHoldStart === 0) slot.approveHoldStart = now;
+      const progress = Math.min(
+        1,
+        (now - slot.approveHoldStart) / APPROVE_HOLD_MS,
+      );
+      slot.grabbed.setHoldProgress("approve", progress);
+      if (progress >= 1) {
+        slot.approveHoldStart = 0;
+        finalize(slot.grabbed, "approve");
+        return;
+      }
+    } else if (slot.approveHoldStart !== 0) {
+      slot.approveHoldStart = 0;
+      slot.grabbed.setHoldProgress("approve", 0);
+    }
+
+    if (rejectPressed) {
+      if (slot.rejectHoldStart === 0) slot.rejectHoldStart = now;
+      const progress = Math.min(
+        1,
+        (now - slot.rejectHoldStart) / REJECT_HOLD_MS,
+      );
+      slot.grabbed.setHoldProgress("reject", progress);
+      if (progress >= 1) {
+        slot.rejectHoldStart = 0;
+        finalize(slot.grabbed, "reject");
+        return;
+      }
+    } else if (slot.rejectHoldStart !== 0) {
+      slot.rejectHoldStart = 0;
+      slot.grabbed.setHoldProgress("reject", 0);
+    }
+  }
 
   if (slot.grabbed) {
     const card = slot.grabbed;
     const pos = new THREE.Vector3(0, 0, -0.45).applyMatrix4(controller.matrixWorld);
     card.group.position.lerp(pos, 0.4);
+    controller.getWorldQuaternion(tmpQuat);
     card.group.quaternion.slerp(tmpQuat, 0.35);
-
-    if (slot.squeezeStart > 0) {
-      const held = now - slot.squeezeStart;
-      const progress = Math.min(1, held / APPROVE_HOLD_MS);
-      card.setApproveProgress(progress);
-      if (progress >= 1) {
-        slot.squeezeStart = 0;
-        finalize(card, "approve");
-      }
-    }
-
-    // Reject = quick downward flick: pitch angular velocity > threshold
-    if (angVel.x > REJECT_FLICK_THRESHOLD) {
-      slot.flickAccum += angVel.x * dt;
-    } else {
-      slot.flickAccum *= 0.85;
-    }
-    if (slot.flickAccum > 0.6) {
-      slot.flickAccum = 0;
-      finalize(card, "reject");
-    }
     return;
   }
 
@@ -458,7 +504,7 @@ function updateController(slot: ControllerSlot, now: number): void {
     .set(0, 0, -1)
     .applyQuaternion(controller.getWorldQuaternion(tmpQuat));
 
-  const meshes = cards.flatMap((c) => [c.group.children[0]!]); // compactMesh
+  const meshes = cards.flatMap((c) => [c.group.children[0]!]);
   const hits = raycaster.intersectObjects(meshes, false);
   const hit = hits[0]?.object?.parent?.userData?.card as
     | InvoiceCardObject
@@ -475,18 +521,13 @@ function updateController(slot: ControllerSlot, now: number): void {
   }
 }
 
-function quatAngularVelocity(
-  prev: THREE.Quaternion,
-  cur: THREE.Quaternion,
-  dt: number,
-): THREE.Vector3 {
-  const d = cur.clone().multiply(prev.clone().invert());
-  tmpEuler.setFromQuaternion(d, "XYZ");
-  return new THREE.Vector3(tmpEuler.x / dt, tmpEuler.y / dt, tmpEuler.z / dt);
-}
-
 function onSelectStart(slot: ControllerSlot): void {
-  if (slot.grabbed) return;
+  if (slot.grabbed) {
+    // Re-pull a card already in hand: drop and re-grab the one under cursor.
+    slot.grabbed.setState("idle");
+    layoutCards();
+    slot.grabbed = null;
+  }
   if (!slot.hovered) return;
   slot.grabbed = slot.hovered;
   slot.grabbed.setState("grabbed");
@@ -495,28 +536,17 @@ function onSelectStart(slot: ControllerSlot): void {
 
 function onSelectEnd(slot: ControllerSlot): void {
   if (!slot.grabbed) return;
-  // Soft drop: return to layout slot if not committed
   if (slot.grabbed.dismissed) {
     slot.grabbed = null;
     return;
   }
+  slot.grabbed.setHoldProgress("approve", 0);
+  slot.grabbed.setHoldProgress("reject", 0);
   slot.grabbed.setState("idle");
   layoutCards();
   slot.grabbed = null;
-}
-
-function onSqueezeStart(slot: ControllerSlot): void {
-  if (!slot.grabbed) return;
-  slot.squeezeStart = performance.now();
-  slot.grabbed.setState("approving");
-}
-
-function onSqueezeEnd(slot: ControllerSlot): void {
-  slot.squeezeStart = 0;
-  if (slot.grabbed) {
-    slot.grabbed.setApproveProgress(0);
-    slot.grabbed.setState("grabbed");
-  }
+  slot.approveHoldStart = 0;
+  slot.rejectHoldStart = 0;
 }
 
 async function enrichCard(card: InvoiceCardObject): Promise<void> {
@@ -695,8 +725,11 @@ class MouseControls {
       this.camera.position.addScaledVector(dir, -e.deltaY * 0.001);
     });
     window.addEventListener("keydown", (e) => {
-      if (e.key === "a" && this.hovered) finalize(this.hovered, "approve");
-      if (e.key === "r" && this.hovered) finalize(this.hovered, "reject");
+      const k = e.key.toLowerCase();
+      const target = this.hovered;
+      if (!target) return;
+      if (k === "a" || k === "x") finalize(target, "approve");
+      if (k === "b" || k === "y") finalize(target, "reject");
     });
   }
 
