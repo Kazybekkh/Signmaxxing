@@ -6,12 +6,14 @@
 import type { Invoice } from "../shared/types.ts";
 import OpenAI from "openai";
 
+const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/";
+
 let _openai: OpenAI | null = null;
 function openai(): OpenAI | null {
   if (_openai) return _openai;
-  const key = process.env.OPENAI_API_KEY;
+  const key = process.env.GEMINI_API_KEY;
   if (!key) return null;
-  _openai = new OpenAI({ apiKey: key });
+  _openai = new OpenAI({ apiKey: key, baseURL: GEMINI_BASE });
   return _openai;
 }
 
@@ -31,7 +33,7 @@ export async function explainEscalation(
   }
   try {
     const resp = await client.chat.completions.create({
-      model: process.env.OPENAI_REASON_MODEL ?? "gpt-4o",
+      model: process.env.GEMINI_REASON_MODEL ?? "gemini-2.5-flash",
       temperature: 0.2,
       messages: [
         { role: "system", content: REASON_SYSTEM },

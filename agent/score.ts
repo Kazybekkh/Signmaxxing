@@ -77,12 +77,14 @@ function heuristicScore(inv: Invoice): Score {
   return { confidence, reason };
 }
 
+const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/";
+
 let _openai: OpenAI | null = null;
 function openai(): OpenAI | null {
   if (_openai) return _openai;
-  const key = process.env.OPENAI_API_KEY;
+  const key = process.env.GEMINI_API_KEY;
   if (!key) return null;
-  _openai = new OpenAI({ apiKey: key });
+  _openai = new OpenAI({ apiKey: key, baseURL: GEMINI_BASE });
   return _openai;
 }
 
@@ -107,7 +109,7 @@ export async function scoreInvoice(inv: Invoice): Promise<Score> {
 
   try {
     const resp = await client.chat.completions.create({
-      model: process.env.OPENAI_SCORE_MODEL ?? "gpt-4o-mini",
+      model: process.env.GEMINI_SCORE_MODEL ?? "gemini-2.5-flash",
       temperature: 0,
       response_format: { type: "json_object" },
       messages: [
