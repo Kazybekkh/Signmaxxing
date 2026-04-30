@@ -490,19 +490,35 @@ SPECTER_FIXTURES: dict[str, dict[str, Any]] = {
 }
 
 
+from specter_client import client as specter_mcp  # type: ignore
+
+
 @app.get("/specter/{vendor}")
-def specter(vendor: str) -> dict[str, Any]:
-    fixture = SPECTER_FIXTURES.get(vendor)
-    if fixture:
-        return fixture
-    return {
-        "vendor": vendor,
-        "domain": None,
-        "incorporation_date": None,
-        "employee_count": None,
-        "risk_flags": ["No Specter record found"],
-        "source": "mock",
-    }
+async def specter(vendor: str) -> dict[str, Any]:
+    """Look up vendor enrichment via the Specter MCP server.
+
+    Falls back to in-process fixtures only if the MCP server is unreachable
+    so the XR demo never goes blank during a live presentation."""
+    try:
+        return await specter_mcp.lookup(vendor)
+    except Exception as exc:
+        print(f"[/specter] MCP unreachable, using fixture: {exc}")
+        fixture = SPECTER_FIXTURES.get(vendor)
+        if fixture:
+            return {**fixture, "source": "mock-fallback"}
+        return {
+            "vendor": vendor,
+            "domain": None,
+            "incorporation_date": None,
+            "employee_count": None,
+            "risk_flags": ["No Specter record found"],
+            "source": "mock-fallback",
+        }
+
+
+@app.on_event("shutdown")
+async def _shutdown_specter() -> None:
+    await specter_mcp.aclose()
 
 
 @app.post("/agent/run")
