@@ -2,8 +2,9 @@
 
 The Cursor SDK agent uses GPT for the actual scoring, but we want a
 deterministic local fallback so the demo cannot fail because the OpenAI key
-is missing or rate-limited. Both paths must agree on the *same three
-escalations* for the seeded data."""
+is missing or rate-limited. Both paths must agree on the *same set of
+escalations* for the seeded data (currently 6 sketchy vendors out of 53
+invoices → 47 auto-paid, 6 escalated)."""
 
 from __future__ import annotations
 
@@ -85,7 +86,7 @@ def score_invoice(invoice: dict[str, Any]) -> Tuple[float, str]:
 
     if amount >= LARGE_AMOUNT_PENNIES:
         # Large amount only erodes confidence when paired with another red flag.
-        # Spec target: 47 auto-paid, 3 escalated (the 3 sketchy vendors).
+        # Spec target: 47 auto-paid, 6 escalated (the seeded sketchy vendors).
         if not is_known:
             confidence -= 0.2
             flags.append(f"amount £{amount/100:,.2f} above £5k threshold")

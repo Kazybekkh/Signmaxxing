@@ -1,7 +1,7 @@
-"""Generate 50 demo invoices.
+"""Generate 53 demo invoices.
 
-40 obviously-fine, 7 borderline (large), 3 sketchy. After agent run we
-expect 47 auto-paid and 3 escalated."""
+40 obviously-fine, 7 borderline (large), 6 sketchy. After agent run we
+expect 47 auto-paid and 6 escalated."""
 
 from __future__ import annotations
 
@@ -74,6 +74,36 @@ SKETCHY = [
             "country": "SC",
         },
     },
+    {
+        "vendor": "Velocity Marketing Group",
+        "amount_gbp": 14_250_00,
+        "description": "Q2 brand-uplift retainer (paid in advance) ref VMG-7714",
+        "vendor_metadata": {
+            "domain": None,
+            "incorporated": "2026-02-01",
+            "country": "GB",
+        },
+    },
+    {
+        "vendor": "Synergy Capital Partners",
+        "amount_gbp": 22_750_00,
+        "description": "Advisory services — Project Halcyon, milestone 1 of 2",
+        "vendor_metadata": {
+            "domain": "synergy-capital.xyz",
+            "incorporated": "2025-08-30",
+            "country": "KY",
+        },
+    },
+    {
+        "vendor": "TrueWave Technologies LLC",
+        "amount_gbp": 6_490_00,
+        "description": "URGENT: software licensing renewal, please remit within 24h",
+        "vendor_metadata": {
+            "domain": "truewave-tech.cf",
+            "incorporated": "2026-03-10",
+            "country": "SC",
+        },
+    },
 ]
 
 
@@ -96,6 +126,7 @@ def _build_invoice(idx: int) -> dict:
         desc = f"Annual contract renewal #{3000 + idx}"
     else:
         sketchy = SKETCHY[idx - 47]
+
         return {
             "id": f"INV-{idx+1:04d}",
             "vendor": sketchy["vendor"],
@@ -135,7 +166,7 @@ def seed(reset: bool = True) -> int:
             conn.execute("DELETE FROM invoices")
             conn.execute("DELETE FROM agent_trace")
 
-        invoices = [_build_invoice(i) for i in range(50)]
+        invoices = [_build_invoice(i) for i in range(47 + len(SKETCHY))]
         for inv in invoices:
             conn.execute(
                 """
