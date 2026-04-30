@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Signmaxxing XR</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: #050608;
+        color: #f5f5f5;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", sans-serif;
+        overflow: hidden;
+      }
+      #app { position: fixed; inset: 0; }
+      canvas { display: block; }
+
+      .hud {
+        position: fixed;
+        z-index: 10;
+        pointer-events: none;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.7);
+      }
+      .hud-card {
+        background: rgba(10, 12, 16, 0.72);
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(255,255,255,0.08);
+      }
+      .hud .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.2rem 0.55rem;
+        border-radius: 9999px;
+        font-size: 0.72rem;
+        font-weight: 600;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.1);
+      }
+      .pill.ok { background: rgba(34,197,94,0.18); border-color: rgba(34,197,94,0.4); color: #86efac; }
+      .pill.warn { background: rgba(234,179,8,0.18); border-color: rgba(234,179,8,0.4); color: #fde68a; }
+      .pill.err { background: rgba(239,68,68,0.18); border-color: rgba(239,68,68,0.4); color: #fca5a5; }
+
+      #enter-xr {
+        position: fixed;
+        right: 1rem;
+        bottom: 1rem;
+        z-index: 30;
+        pointer-events: auto;
+        background: linear-gradient(135deg, #2563eb, #9333ea);
+        color: white;
+        padding: 0.85rem 1.4rem;
+        border-radius: 9999px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        box-shadow: 0 10px 40px rgba(99,102,241,0.45);
+        cursor: pointer;
+        border: 0;
+        font-size: 0.95rem;
+      }
+      #enter-xr:disabled { opacity: 0.5; cursor: not-allowed; }
+
+      #toast {
+        position: fixed;
+        left: 50%;
+        top: 1rem;
+        transform: translateX(-50%);
+        z-index: 40;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.2s;
+      }
+      #toast.show { opacity: 1; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <div id="boot-status" style="position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:50;padding:14px 22px;border-radius:14px;background:rgba(15,23,42,0.92);color:#f8fafc;font-family:ui-sans-serif,system-ui,sans-serif;font-size:14px;text-align:center;max-width:88vw;border:1px solid rgba(255,255,255,0.12);">
+      <div style="font-weight:600;letter-spacing:0.18em;font-size:11px;color:#a5b4fc;margin-bottom:6px">SIGNMAXXING</div>
+      <div id="boot-line">booting…</div>
+    </div>
+
+    <div id="error-pane" style="display:none;position:fixed;left:1rem;right:1rem;bottom:1rem;z-index:60;padding:12px 14px;border-radius:10px;background:rgba(127,29,29,0.92);color:#fff5f5;font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap;max-height:40vh;overflow:auto;border:1px solid rgba(255,255,255,0.15);"></div>
+
+    <div class="hud" style="left: 1rem; top: 1rem; max-width: 22rem;">
+      <div class="hud-card rounded-xl p-3">
+        <div class="flex items-center justify-between">
+          <div class="text-sm font-semibold tracking-wide">SIGNMAXXING</div>
+          <span id="status-pill" class="pill">connecting</span>
+        </div>
+        <div class="mt-2 text-xs text-white/60" id="key-line">key: …</div>
+        <div class="mt-3 flex gap-2 text-xs">
+          <span class="pill ok"><span id="auto-paid-count">0</span> auto-paid</span>
+          <span class="pill warn"><span id="escalated-count">0</span> escalated</span>
+        </div>
+        <div class="mt-3 grid grid-cols-2 gap-2">
+          <button id="run-agent" class="rounded-lg bg-white/10 hover:bg-white/20 transition px-3 py-1.5 text-xs font-medium pointer-events-auto">Run agent</button>
+          <button id="reset-demo" class="rounded-lg bg-white/5 hover:bg-white/15 transition px-3 py-1.5 text-xs font-medium pointer-events-auto">Reset</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="hud" style="right: 1rem; top: 1rem; width: 24rem; max-height: 70vh; overflow: hidden;">
+      <div class="hud-card rounded-xl p-3 flex flex-col" style="max-height: 70vh;">
+        <div class="text-xs uppercase tracking-widest text-white/50 mb-2">Agent trace</div>
+        <div id="trace-list" class="text-xs space-y-1 overflow-auto" style="max-height: 60vh;"></div>
+      </div>
+    </div>
+
+    <div class="hud" style="left: 1rem; bottom: 1rem; width: 24rem;">
+      <div class="hud-card rounded-xl p-3">
+        <div class="text-xs uppercase tracking-widest text-white/50 mb-2">Ledger (latest)</div>
+        <div id="ledger-list" class="text-xs space-y-1 max-h-40 overflow-auto"></div>
+      </div>
+    </div>
+
+    <div id="toast" class="hud-card rounded-full px-4 py-2 text-sm"></div>
+
+    <div class="hud" style="right: 1rem; bottom: 5.5rem; width: 13rem;">
+      <div class="hud-card rounded-xl p-3 text-center pointer-events-auto">
+        <div class="text-[10px] uppercase tracking-widest text-white/50 mb-2">Open on Zapbox</div>
+        <img src="/zapbox-qr.png" alt="QR to XR" class="w-full rounded-md bg-white p-1.5" />
+        <div class="text-[10px] font-mono text-white/70 mt-2 break-all" id="xr-host-line">http://172.20.10.3:5173/</div>
+      </div>
+    </div>
+
+    <button id="enter-xr" disabled>Loading…</button>
+
+    <script>
+      // Surface every error on screen so the phone tells us what is wrong.
+      (function () {
+        const pane = document.getElementById("error-pane");
+        function show(label, err) {
+          if (!pane) return;
+          pane.style.display = "block";
+          const msg =
+            (err && (err.stack || err.message)) ||
+            (err && JSON.stringify(err)) ||
+            String(err);
+          pane.textContent += `[${label}] ${msg}\n`;
+        }
+        window.addEventListener("error", (e) => show("error", e.error || e.message));
+        window.addEventListener("unhandledrejection", (e) =>
+          show("promise", e.reason),
+        );
+        window.__sx_boot = (line) => {
+          const el = document.getElementById("boot-line");
+          if (el) el.textContent = line;
+        };
+        window.__sx_done = () => {
+          const el = document.getElementById("boot-status");
+          if (el) el.remove();
+        };
+        // Module scripts that fail to load never fire window.error.
+        // After 6s, if main never reported success, show a hint.
+        setTimeout(() => {
+          const el = document.getElementById("boot-line");
+          if (el && el.textContent === "booting…") {
+            el.textContent =
+              "scripts didn't run — try reloading, or open the browser console.";
+          }
+        }, 6000);
+      })();
+    </script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

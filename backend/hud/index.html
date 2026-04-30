@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Signmaxxing HUD</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      body {
+        background: radial-gradient(ellipse at top, #111827, #030712 60%);
+        color: #f8fafc;
+        font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+        margin: 0;
+        min-height: 100vh;
+      }
+      .card {
+        background: rgba(15, 23, 42, 0.7);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        backdrop-filter: blur(8px);
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.2rem 0.6rem;
+        border-radius: 9999px;
+        font-size: 0.72rem;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body class="p-8">
+    <header class="flex items-baseline justify-between mb-6">
+      <div>
+        <div class="text-xs uppercase tracking-[0.3em] text-white/50">Cursor Hack London 2026 · Track 01</div>
+        <h1 class="text-3xl font-semibold mt-1">Signmaxxing — Approval Room</h1>
+      </div>
+      <div class="text-sm text-white/60" id="last-updated">—</div>
+    </header>
+
+    <section class="grid grid-cols-3 gap-4 mb-6">
+      <div class="card rounded-2xl p-5">
+        <div class="text-xs uppercase tracking-widest text-white/50">Auto-paid</div>
+        <div class="text-4xl font-bold text-emerald-400 mt-2" id="metric-auto">0</div>
+        <div class="text-xs text-white/50 mt-1">invoices flushed by the agent</div>
+      </div>
+      <div class="card rounded-2xl p-5">
+        <div class="text-xs uppercase tracking-widest text-white/50">Escalated</div>
+        <div class="text-4xl font-bold text-amber-400 mt-2" id="metric-escalated">0</div>
+        <div class="text-xs text-white/50 mt-1">awaiting signed approval in XR</div>
+      </div>
+      <div class="card rounded-2xl p-5">
+        <div class="text-xs uppercase tracking-widest text-white/50">Signed actions</div>
+        <div class="text-4xl font-bold text-sky-400 mt-2" id="metric-signed">0</div>
+        <div class="text-xs text-white/50 mt-1">approvals + rejections verified</div>
+      </div>
+    </section>
+
+    <section class="grid grid-cols-2 gap-4">
+      <div class="card rounded-2xl p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="font-semibold">Agent trace</h2>
+          <button id="run-agent" class="rounded-full bg-indigo-500/80 hover:bg-indigo-400 transition px-3 py-1 text-xs font-semibold">Run agent</button>
+        </div>
+        <div id="trace-list" class="text-xs space-y-1 max-h-[60vh] overflow-auto"></div>
+      </div>
+
+      <div class="card rounded-2xl p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="font-semibold">Ledger</h2>
+          <button id="reset-demo" class="rounded-full bg-white/10 hover:bg-white/20 transition px-3 py-1 text-xs font-semibold">Reset demo</button>
+        </div>
+        <div id="ledger-list" class="text-sm space-y-1 max-h-[60vh] overflow-auto"></div>
+      </div>
+    </section>
+
+    <section class="mt-6 card rounded-2xl p-5 flex items-center gap-6">
+      <img src="/hud/zapbox-qr.png" alt="Scan to open XR" class="w-32 h-32 rounded-lg bg-white p-2" />
+      <div class="text-sm text-white/80">
+        <div class="text-xs uppercase tracking-widest text-white/50 mb-1">Open on the Zapbox phone</div>
+        <div class="text-base font-mono text-white" id="xr-url">http://172.20.10.3:5173/</div>
+        <div class="text-xs text-white/50 mt-2">
+          Scan the QR with the phone, then tap <span class="text-white">Enter VR</span>.
+          WebXR needs HTTPS off-localhost — see the README for a quick mkcert tunnel if your phone refuses VR mode.
+        </div>
+      </div>
+    </section>
+
+    <footer class="mt-8 text-xs text-white/40 flex items-center justify-between">
+      <div>
+        Backend on <span class="font-mono">:8000</span> · XR on <span class="font-mono">:5173</span>
+      </div>
+      <div>
+        Run: <span class="font-mono">bun run xr/dev</span> &nbsp;·&nbsp; <span class="font-mono">bun run agent/run.ts</span>
+      </div>
+    </footer>
+
+    <script>
+      const fmtAmount = (p) =>
+        p === 0
+          ? "—"
+          : "£" +
+            (p / 100).toLocaleString("en-GB", {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            });
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"]/g, (c) => ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+        }[c]));
+      }
+
+      async function refresh() {
+        try {
+          const [ledgerRes, escRes, traceRes] = await Promise.all([
+            fetch("/ledger"),
+            fetch("/escalations"),
+            fetch("/agent/trace?limit=60"),
+          ]);
+          const ledger = await ledgerRes.json();
+          const escalations = await escRes.json();
+          const trace = await traceRes.json();
+
+          const auto = ledger.filter((r) => r.decision === "auto_pay").length;
+          const signed = ledger.filter(
+            (r) => r.decision === "approve" || r.decision === "reject",
+          ).length;
+          document.getElementById("metric-auto").textContent = auto;
+          document.getElementById("metric-escalated").textContent =
+            escalations.length;
+          document.getElementById("metric-signed").textContent = signed;
+
+          const ll = document.getElementById("ledger-list");
+          ll.innerHTML = "";
+          for (const r of ledger.slice(0, 40)) {
+            const div = document.createElement("div");
+            const cls =
+              r.decision === "auto_pay"
+                ? "text-emerald-300"
+                : r.decision === "approve"
+                  ? "text-sky-300"
+                  : "text-rose-300";
+            div.innerHTML = `<span class="${cls} font-semibold uppercase mr-2">${r.decision.replace("_", " ")}</span><span class="text-white/90">${escapeHtml(r.vendor)}</span> <span class="text-white/40">${fmtAmount(r.amount_gbp)}</span>`;
+            ll.appendChild(div);
+          }
+          if (ledger.length === 0) {
+            ll.innerHTML = `<div class="text-white/40 italic">no transactions yet — click "Run agent"</div>`;
+          }
+
+          const tl = document.getElementById("trace-list");
+          tl.innerHTML = "";
+          for (const r of trace.slice(0, 40).reverse()) {
+            const div = document.createElement("div");
+            div.className = "text-white/80";
+            const time = new Date(r.timestamp).toLocaleTimeString();
+            div.innerHTML = `<span class="text-white/40 mr-2">${time}</span>${escapeHtml(r.line)}`;
+            tl.appendChild(div);
+          }
+          if (trace.length === 0) {
+            tl.innerHTML = `<div class="text-white/40 italic">agent has not run yet</div>`;
+          }
+
+          document.getElementById("last-updated").textContent =
+            "updated " + new Date().toLocaleTimeString();
+        } catch (err) {
+          console.error("refresh failed", err);
+          document.getElementById("last-updated").textContent =
+            "backend unreachable";
+        }
+      }
+
+      document.getElementById("run-agent").addEventListener("click", async () => {
+        await fetch("/agent/reset", { method: "POST" });
+        await fetch("/agent/run", { method: "POST" });
+        refresh();
+      });
+
+      document.getElementById("reset-demo").addEventListener("click", async () => {
+        await fetch("/agent/reset", { method: "POST" });
+        refresh();
+      });
+
+      refresh();
+      setInterval(refresh, 2500);
+    </script>
+  </body>
+</html>
