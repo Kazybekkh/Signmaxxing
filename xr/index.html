@@ -88,8 +88,12 @@
     <div class="hud" style="left: 1rem; top: 1rem; max-width: 22rem;">
       <div class="hud-card rounded-xl p-3">
         <div class="flex items-center justify-between">
-          <div class="text-sm font-semibold tracking-wide">SIGNMAXXING</div>
+          <div class="text-sm font-semibold tracking-wide">SIGNMAXXING <span class="text-[9px] font-mono text-white/40 tracking-normal">b5-sky</span></div>
           <span id="status-pill" class="pill">connecting</span>
+        </div>
+        <div class="mt-2 flex gap-2 items-center">
+          <span class="text-[10px] text-white/40 uppercase tracking-widest">scene</span>
+          <span id="bg-badge" class="pill" style="background:rgba(99,102,241,0.25);border:1px solid rgba(99,102,241,0.5);color:#c7d2fe">studio</span>
         </div>
         <div class="mt-2 text-xs text-white/60" id="key-line">key: …</div>
         <div class="mt-3 flex gap-2 text-xs">
@@ -99,6 +103,10 @@
         <div class="mt-3 grid grid-cols-2 gap-2">
           <button id="run-agent" class="rounded-lg bg-white/10 hover:bg-white/20 transition px-3 py-1.5 text-xs font-medium pointer-events-auto">Run agent</button>
           <button id="reset-demo" class="rounded-lg bg-white/5 hover:bg-white/15 transition px-3 py-1.5 text-xs font-medium pointer-events-auto">Reset</button>
+        </div>
+        <div class="mt-2">
+          <button id="bg-cycle" class="w-full rounded-lg bg-sky-500/25 hover:bg-sky-500/45 transition px-3 py-1.5 text-xs font-medium pointer-events-auto">Backdrop: studio → puresky</button>
+          <div class="text-[10px] text-white/40 mt-1 leading-snug">tap to cycle <b>studio → puresky → office</b>. In XR, click the <b>thumbstick</b> to cycle.</div>
         </div>
       </div>
     </div>
@@ -122,8 +130,11 @@
           <span class="text-white/85"><b>Hold</b> B (right) or Y (left) to <b>reject</b></span>
           <span class="inline-flex items-center justify-center text-[10px] font-bold rounded-md bg-white/10 border border-white/20 text-white/70 px-2 py-1 min-w-[3.2rem]">release</span>
           <span class="text-white/60">let go of the trigger to drop without deciding</span>
+          <span class="inline-flex items-center justify-center text-[10px] font-bold rounded-md bg-sky-500/25 border border-sky-300/40 text-sky-100 px-2 py-1 min-w-[3.2rem]">STICK</span>
+          <span class="text-white/85">Click <b>thumbstick</b> to cycle backdrop (studio → puresky → office)</span>
         </div>
-        <div class="text-[10px] text-white/40 mt-2 italic">Laptop preview: click a card, then press A or B on the keyboard.</div>
+        <div class="text-[10px] text-white/45 mt-2 leading-snug">Grabbing a card unfurls the full <b>invoice document</b> next to it. Approving prints a signed <b>receipt</b> with the Ed25519 signature.</div>
+        <div class="text-[10px] text-white/40 mt-1 italic">Laptop preview: click a card, then press A or B on the keyboard.</div>
       </div>
       <div class="hud-card rounded-xl p-3">
         <div class="text-xs uppercase tracking-widest text-white/50 mb-2">Ledger (latest)</div>

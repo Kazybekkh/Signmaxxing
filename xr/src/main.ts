@@ -7,8 +7,11 @@
 import * as THREE from "three";
 import { XRControllerModelFactory } from "three/examples/jsm/webxr/XRControllerModelFactory.js";
 import { VRButton } from "three/examples/jsm/webxr/VRButton.js";
+import { RGBELoader } from "three/examples/jsm/loaders/RGBELoader.js";
+import { EXRLoader } from "three/examples/jsm/loaders/EXRLoader.js";
 
 import { InvoiceCardObject } from "./card.ts";
+import { InvoiceDocument, Receipt, StampBurst } from "./documents.ts";
 import { enrich } from "./specter.ts";
 import { loadOrCreateKeypair, signApproval, type Keypair } from "./sign.ts";
 import {
@@ -47,11 +50,15 @@ type ControllerSlot = {
   raycaster: THREE.Raycaster;
   hovered: InvoiceCardObject | null;
   grabbed: InvoiceCardObject | null;
+  document: InvoiceDocument | null; // PDF panel attached to grabbed card
   approveHoldStart: number; // unix ms when A/X went down (0 = not held)
   rejectHoldStart: number;
   buttonsPrev: boolean[]; // edge-detection
 };
 const slots: ControllerSlot[] = [];
+
+const activeReceipts: Receipt[] = [];
+const activeStamps: StampBurst[] = [];
 
 const APPROVE_HOLD_MS = 800;
 const REJECT_HOLD_MS = 800;
@@ -61,6 +68,7 @@ const REJECT_HOLD_MS = 800;
 // 4 = A (right) / X (left), 5 = B (right) / Y (left)
 const BTN_TRIGGER = 0;
 const BTN_GRIP = 1;
+const BTN_THUMB = 3; // thumbstick click — used to cycle the backdrop
 const BTN_PRIMARY = 4; // A or X
 const BTN_SECONDARY = 5; // B or Y
 
@@ -106,16 +114,33 @@ async function boot(): Promise<void> {
   bootDone();
 }
 
+type BgKind = "studio" | "office" | "puresky";
+
+const BG_ORDER: BgKind[] = ["studio", "puresky", "office"];
+const BG_LABEL: Record<BgKind, string> = {
+  studio: "studio",
+  office: "office",
+  puresky: "puresky",
+};
+const BG_NEXT_LABEL: Record<BgKind, string> = {
+  studio: "→ puresky",
+  puresky: "→ office",
+  office: "→ studio",
+};
+
+let studioBackground: THREE.Texture | null = null;
+let officeBackground: THREE.Texture | null = null;
+let pureskyBackground: THREE.Texture | null = null;
+let currentBg: BgKind = "studio";
+
 function buildScene(): void {
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0b0f1a);
-  scene.fog = new THREE.FogExp2(0x0b0f1a, 0.04);
 
   camera = new THREE.PerspectiveCamera(
     70,
     window.innerWidth / window.innerHeight,
     0.05,
-    50,
+    100,
   );
   camera.position.set(0, 1.6, 0);
   camera.lookAt(0, 1.4, -SEMICIRCLE_RADIUS);
@@ -124,32 +149,21 @@ function buildScene(): void {
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
   renderer.xr.enabled = true;
   document.getElementById("app")!.appendChild(renderer.domElement);
 
-  const ambient = new THREE.HemisphereLight(0x9ab1ff, 0x0a0820, 0.7);
+  const ambient = new THREE.HemisphereLight(0xe0e7ff, 0x1a2138, 0.85);
   scene.add(ambient);
-  const dir = new THREE.DirectionalLight(0xffffff, 0.5);
-  dir.position.set(2, 4, 1);
-  scene.add(dir);
+  const key = new THREE.DirectionalLight(0xffffff, 0.6);
+  key.position.set(2, 4, 2);
+  scene.add(key);
 
-  const grid = new THREE.GridHelper(20, 40, 0x1f2937, 0x0f172a);
-  (grid.material as THREE.Material).transparent = true;
-  (grid.material as THREE.Material).opacity = 0.4;
-  scene.add(grid);
-
-  const horizon = new THREE.Mesh(
-    new THREE.RingGeometry(8, 9, 64),
-    new THREE.MeshBasicMaterial({
-      color: 0x6366f1,
-      transparent: true,
-      opacity: 0.15,
-      side: THREE.DoubleSide,
-    }),
-  );
-  horizon.rotation.x = -Math.PI / 2;
-  horizon.position.y = 0.01;
-  scene.add(horizon);
+  // Default: bright studio backdrop. HDRI is opt-in via the HUD button.
+  studioBackground = makeStudioBackground();
+  scene.background = studioBackground;
+  scene.add(makeFloorDisc());
 
   setupControllers();
 
@@ -160,6 +174,160 @@ function buildScene(): void {
   });
 
   mouseControls = new MouseControls(camera, renderer.domElement);
+}
+
+function makeStudioBackground(): THREE.Texture {
+  // Vertical gradient sky: warm cream at the top, deep indigo at the floor.
+  const canvas = document.createElement("canvas");
+  canvas.width = 32;
+  canvas.height = 1024;
+  const ctx = canvas.getContext("2d")!;
+  const grad = ctx.createLinearGradient(0, 0, 0, 1024);
+  grad.addColorStop(0.0, "#fef3c7"); // warm sky
+  grad.addColorStop(0.45, "#a5b4fc"); // mid horizon
+  grad.addColorStop(0.7, "#312e81"); // floor approach
+  grad.addColorStop(1.0, "#0f172a"); // deep floor
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 32, 1024);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  return tex;
+}
+
+function makeFloorDisc(): THREE.Mesh {
+  const geo = new THREE.CircleGeometry(8, 64);
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 512;
+  const ctx = canvas.getContext("2d")!;
+  const grad = ctx.createRadialGradient(256, 256, 32, 256, 256, 256);
+  grad.addColorStop(0, "rgba(165, 180, 252, 0.55)");
+  grad.addColorStop(0.5, "rgba(67, 56, 202, 0.18)");
+  grad.addColorStop(1, "rgba(15, 23, 42, 0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 512, 512);
+  ctx.strokeStyle = "rgba(199, 210, 254, 0.55)";
+  ctx.lineWidth = 2;
+  for (let r = 64; r < 256; r += 48) {
+    ctx.beginPath();
+    ctx.arc(256, 256, r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex,
+    transparent: true,
+    side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.y = 0.01;
+  return mesh;
+}
+
+async function loadEquirect(
+  url: string,
+  loader: RGBELoader | EXRLoader,
+): Promise<THREE.Texture> {
+  const tex = await loader.loadAsync(url);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  pmrem.compileEquirectangularShader();
+  const envMap = pmrem.fromEquirectangular(tex).texture;
+  tex.dispose();
+  pmrem.dispose();
+  return envMap;
+}
+
+async function ensureOfficeHDRI(): Promise<THREE.Texture> {
+  if (!officeBackground) {
+    officeBackground = await loadEquirect(
+      `/hdri/office.hdr?v=2026-04-30b`,
+      new RGBELoader(),
+    );
+  }
+  return officeBackground;
+}
+
+async function ensurePureskyEXR(): Promise<THREE.Texture> {
+  if (!pureskyBackground) {
+    pureskyBackground = await loadEquirect(
+      `/hdri/puresky.exr?v=2026-04-30b`,
+      new EXRLoader(),
+    );
+  }
+  return pureskyBackground;
+}
+
+function setBgBadge(text: string, kind: "studio" | "office" | "sky" | "loading" | "err"): void {
+  const badge = document.getElementById("bg-badge");
+  if (!badge) return;
+  badge.textContent = text;
+  const palette: Record<typeof kind, [string, string, string]> = {
+    studio:  ["rgba(99,102,241,0.25)",  "rgba(99,102,241,0.5)",  "#c7d2fe"],
+    office:  ["rgba(34,197,94,0.25)",   "rgba(34,197,94,0.5)",   "#86efac"],
+    sky:     ["rgba(56,189,248,0.25)",  "rgba(56,189,248,0.5)",  "#bae6fd"],
+    loading: ["rgba(234,179,8,0.25)",   "rgba(234,179,8,0.5)",   "#fde68a"],
+    err:     ["rgba(239,68,68,0.25)",   "rgba(239,68,68,0.5)",   "#fca5a5"],
+  };
+  const [bg, border, color] = palette[kind];
+  badge.style.background = bg;
+  badge.style.borderColor = border;
+  badge.style.color = color;
+}
+
+function refreshBgButtonLabel(): void {
+  const btn = document.getElementById("bg-cycle");
+  if (btn) {
+    btn.textContent = `Backdrop: ${BG_LABEL[currentBg]} ${BG_NEXT_LABEL[currentBg]}`;
+  }
+}
+
+export async function setBackground(kind: BgKind): Promise<void> {
+  currentBg = kind;
+  refreshBgButtonLabel();
+
+  if (kind === "studio") {
+    if (!studioBackground) studioBackground = makeStudioBackground();
+    scene.background = studioBackground;
+    scene.environment = null;
+    (scene as unknown as { backgroundBlurriness: number }).backgroundBlurriness = 0;
+    (scene as unknown as { backgroundIntensity: number }).backgroundIntensity = 1;
+    setBgBadge("studio", "studio");
+    return;
+  }
+
+  setBgBadge(`loading ${kind}…`, "loading");
+  try {
+    const env = kind === "office" ? await ensureOfficeHDRI() : await ensurePureskyEXR();
+    if (currentBg !== kind) return; // user moved on while we loaded
+    scene.background = env;
+    scene.environment = env;
+    if (kind === "office") {
+      (scene as unknown as { backgroundBlurriness: number }).backgroundBlurriness = 0.04;
+      (scene as unknown as { backgroundIntensity: number }).backgroundIntensity = 1.6;
+      setBgBadge("office", "office");
+    } else {
+      // Puresky reads beautifully with zero blur and a touch more intensity.
+      (scene as unknown as { backgroundBlurriness: number }).backgroundBlurriness = 0;
+      (scene as unknown as { backgroundIntensity: number }).backgroundIntensity = 1.15;
+      setBgBadge("puresky", "sky");
+    }
+  } catch (err) {
+    console.warn(`${kind} HDRI failed, reverting to studio:`, err);
+    currentBg = "studio";
+    if (studioBackground) scene.background = studioBackground;
+    setBgBadge(`${kind} failed`, "err");
+    refreshBgButtonLabel();
+  }
+}
+
+export function cycleBackground(): Promise<void> {
+  const idx = BG_ORDER.indexOf(currentBg);
+  const next = BG_ORDER[(idx + 1) % BG_ORDER.length]!;
+  return setBackground(next);
 }
 
 function setupControllers(): void {
@@ -215,6 +383,7 @@ function makeSlot(
     raycaster: new THREE.Raycaster(),
     hovered: null,
     grabbed: null,
+    document: null,
     approveHoldStart: 0,
     rejectHoldStart: 0,
     buttonsPrev: [],
@@ -259,10 +428,42 @@ function startLoop(): void {
     if (!renderer.xr.isPresenting) {
       mouseControls.update();
     }
-    for (const slot of slots) updateController(slot, t);
+    for (const slot of slots) {
+      updateController(slot, t);
+      if (slot.document && slot.grabbed) {
+        slot.document.tick(t);
+        positionDocumentNearCard(slot.document, slot.grabbed);
+      }
+    }
     for (const card of cards) card.tick(t);
+
+    for (let i = activeStamps.length - 1; i >= 0; i--) {
+      const alive = activeStamps[i]!.tick();
+      if (!alive) {
+        scene.remove(activeStamps[i]!.group);
+        activeStamps[i]!.dispose();
+        activeStamps.splice(i, 1);
+      }
+    }
+    for (const r of activeReceipts) r.tick();
+
     renderer.render(scene, camera);
   });
+}
+
+/** Park the PDF document a little to the right of the grabbed card,
+ *  rotated to face the same direction. */
+function positionDocumentNearCard(
+  doc: InvoiceDocument,
+  card: InvoiceCardObject,
+): void {
+  card.group.updateMatrixWorld();
+  const offset = new THREE.Vector3(0.85, -0.05, -0.02);
+  const world = offset.applyMatrix4(card.group.matrixWorld);
+  doc.group.position.copy(world);
+  doc.group.quaternion.copy(card.group.quaternion);
+  // Slight outward tilt so it reads as a separate document.
+  doc.group.rotateY(-0.18);
 }
 
 // ---------------------------------------------------------------------------
@@ -292,7 +493,33 @@ function layoutCards(): void {
     card.group.lookAt(new THREE.Vector3(0, CARD_HEIGHT, 0));
     scene.add(card.group);
     cards.push(card);
+    animateSpawn(card, i * 70);
   }
+}
+
+function animateSpawn(card: InvoiceCardObject, delayMs: number): void {
+  card.group.scale.setScalar(0.001);
+  const start = performance.now() + delayMs;
+  const tick = () => {
+    const dt = (performance.now() - start) / 420;
+    if (dt < 0) {
+      requestAnimationFrame(tick);
+      return;
+    }
+    if (dt >= 1) {
+      card.group.scale.setScalar(1);
+      return;
+    }
+    card.group.scale.setScalar(easeOutBack(dt));
+    requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+function easeOutBack(t: number): number {
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
 }
 
 let currentEscalations: Card[] = [];
@@ -303,10 +530,7 @@ function showPlaceholder(show: boolean): void {
     canvas.width = 1024;
     canvas.height = 512;
     const ctx = canvas.getContext("2d")!;
-    const grad = ctx.createLinearGradient(0, 0, 0, 512);
-    grad.addColorStop(0, "#1e1b4b");
-    grad.addColorStop(1, "#0f172a");
-    ctx.fillStyle = grad;
+    ctx.fillStyle = "rgba(15, 23, 42, 0.92)";
     ctx.fillRect(0, 0, 1024, 512);
     ctx.strokeStyle = "#a5b4fc";
     ctx.lineWidth = 6;
@@ -451,6 +675,19 @@ function updateController(slot: ControllerSlot, now: number): void {
 
   // Poll gamepad face buttons for explicit, labeled approve/reject.
   const pad = readGamepad(slot);
+
+  // Thumbstick click cycles the backdrop (works any time, even with no card grabbed).
+  if (pad) {
+    const thumbNow = !!pad.buttons[BTN_THUMB]?.pressed;
+    const thumbPrev = !!slot.buttonsPrev[BTN_THUMB];
+    if (thumbNow && !thumbPrev) {
+      void cycleBackground().then(() => {
+        flashToast(`Backdrop → ${currentBg}`, "ok");
+      });
+    }
+    slot.buttonsPrev[BTN_THUMB] = thumbNow;
+  }
+
   if (pad && slot.grabbed) {
     const approvePressed = !!pad.buttons[BTN_PRIMARY]?.pressed;
     const rejectPressed = !!pad.buttons[BTN_SECONDARY]?.pressed;
@@ -523,14 +760,15 @@ function updateController(slot: ControllerSlot, now: number): void {
 
 function onSelectStart(slot: ControllerSlot): void {
   if (slot.grabbed) {
-    // Re-pull a card already in hand: drop and re-grab the one under cursor.
     slot.grabbed.setState("idle");
+    disposeSlotDocument(slot);
     layoutCards();
     slot.grabbed = null;
   }
   if (!slot.hovered) return;
   slot.grabbed = slot.hovered;
   slot.grabbed.setState("grabbed");
+  spawnDocumentForSlot(slot);
   void enrichCard(slot.grabbed);
 }
 
@@ -538,15 +776,33 @@ function onSelectEnd(slot: ControllerSlot): void {
   if (!slot.grabbed) return;
   if (slot.grabbed.dismissed) {
     slot.grabbed = null;
+    disposeSlotDocument(slot);
     return;
   }
   slot.grabbed.setHoldProgress("approve", 0);
   slot.grabbed.setHoldProgress("reject", 0);
   slot.grabbed.setState("idle");
+  disposeSlotDocument(slot);
   layoutCards();
   slot.grabbed = null;
   slot.approveHoldStart = 0;
   slot.rejectHoldStart = 0;
+}
+
+function spawnDocumentForSlot(slot: ControllerSlot): void {
+  if (!slot.grabbed) return;
+  if (slot.document) disposeSlotDocument(slot);
+  const doc = new InvoiceDocument(slot.grabbed.data.invoice);
+  scene.add(doc.group);
+  positionDocumentNearCard(doc, slot.grabbed);
+  slot.document = doc;
+}
+
+function disposeSlotDocument(slot: ControllerSlot): void {
+  if (!slot.document) return;
+  const doc = slot.document;
+  slot.document = null;
+  doc.fadeOutAndDispose(() => scene.remove(doc.group));
 }
 
 async function enrichCard(card: InvoiceCardObject): Promise<void> {
@@ -573,6 +829,10 @@ async function finalize(
       `${card.data.invoice.vendor} → ${result.status}`,
       decision === "approve" ? "ok" : "warn",
     );
+
+    spawnStampOnCard(card, decision);
+    spawnReceiptForCard(card, decision, signed);
+    closeSlotsHolding(card);
     animateOut(card, decision);
   } catch (err) {
     console.error(err);
@@ -581,6 +841,57 @@ async function finalize(
     card.dismissed = false;
   }
   await refreshAll();
+}
+
+/** When a card is committed, drop any docs the slots had attached to it. */
+function closeSlotsHolding(card: InvoiceCardObject): void {
+  for (const slot of slots) {
+    if (slot.grabbed === card) {
+      disposeSlotDocument(slot);
+      slot.grabbed = null;
+      slot.approveHoldStart = 0;
+      slot.rejectHoldStart = 0;
+    }
+  }
+}
+
+function spawnStampOnCard(
+  card: InvoiceCardObject,
+  decision: "approve" | "reject",
+): void {
+  const stamp = new StampBurst(decision);
+  card.group.updateMatrixWorld();
+  const offset = new THREE.Vector3(0, 0.05, 0.04);
+  const world = offset.applyMatrix4(card.group.matrixWorld);
+  stamp.group.position.copy(world);
+  stamp.group.quaternion.copy(card.group.quaternion);
+  scene.add(stamp.group);
+  activeStamps.push(stamp);
+}
+
+function spawnReceiptForCard(
+  card: InvoiceCardObject,
+  decision: "approve" | "reject",
+  signed: import("../../shared/types").SignedApproval,
+): void {
+  const receipt = new Receipt(card.data.invoice, decision, signed);
+  card.group.updateMatrixWorld();
+  // Receipt prints "off the bottom" of the card and drifts outward.
+  const offset = new THREE.Vector3(0.42, -0.55, 0.03);
+  const world = offset.applyMatrix4(card.group.matrixWorld);
+  receipt.group.position.copy(world);
+  receipt.group.quaternion.copy(card.group.quaternion);
+  receipt.group.rotateZ(0.08);
+  scene.add(receipt.group);
+  activeReceipts.push(receipt);
+  // Auto-cleanup after a few seconds.
+  window.setTimeout(() => {
+    receipt.fadeOut(() => {
+      scene.remove(receipt.group);
+      const i = activeReceipts.indexOf(receipt);
+      if (i >= 0) activeReceipts.splice(i, 1);
+    });
+  }, 5500);
 }
 
 function animateOut(card: InvoiceCardObject, decision: "approve" | "reject"): void {
@@ -654,6 +965,13 @@ function bindHud(): void {
       flashToast(`Reset failed: ${(err as Error).message}`, "err");
     }
   });
+
+  document.getElementById("bg-cycle")?.addEventListener("click", () => {
+    void cycleBackground().then(() => {
+      flashToast(`Backdrop → ${currentBg}`, "ok");
+    });
+  });
+  refreshBgButtonLabel();
 }
 
 function setStatus(label: string, kind: "ok" | "warn" | "err"): void {
