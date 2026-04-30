@@ -99,30 +99,58 @@ export class InvoiceCardObject {
   }
 
   setState(state: CardState): void {
+    const wasGrabbed = this._state === "grabbed";
     this._state = state;
     switch (state) {
       case "idle":
         this.expandedMesh.visible = false;
+        this.compactMesh.visible = true;
+        this.compactMat.opacity = 1;
         this.glowMat.opacity = 0;
+        this.glowMesh.scale.set(1, 1, 1);
+        if (wasGrabbed) this.popScale();
         break;
       case "hover":
         this.expandedMesh.visible = false;
+        this.compactMesh.visible = true;
+        this.compactMat.opacity = 1;
         this.glowMat.opacity = 0.35;
+        this.glowMesh.scale.set(1, 1, 1);
         break;
       case "grabbed":
+        // Hide the small placeholder so the big "expanded" card reads as
+        // a clean dossier in the user's hand, not a stack of two planes.
+        this.compactMesh.visible = false;
         this.expandedMesh.visible = true;
-        this.glowMat.opacity = 0.55;
+        this.glowMat.color.set(this.confidenceColor());
+        this.glowMat.opacity = 0.7;
+        // Inflate the glow halo to wrap the larger expanded plane.
+        this.glowMesh.scale.set(2.3, 2.5, 1);
         this.drawExpanded();
+        this.popScale();
         break;
       case "approving":
+        this.compactMesh.visible = false;
+        this.expandedMesh.visible = true;
         this.glowMat.color.set("#22c55e");
-        this.glowMat.opacity = 0.7;
+        this.glowMat.opacity = 0.85;
+        this.glowMesh.scale.set(2.3, 2.5, 1);
         break;
       case "rejecting":
+        this.compactMesh.visible = false;
+        this.expandedMesh.visible = true;
         this.glowMat.color.set("#ef4444");
-        this.glowMat.opacity = 0.7;
+        this.glowMat.opacity = 0.85;
+        this.glowMesh.scale.set(2.3, 2.5, 1);
         break;
     }
+  }
+
+  private popStart = 0;
+  private popping = false;
+  private popScale(): void {
+    this.popStart = performance.now();
+    this.popping = true;
   }
 
   get state(): CardState {
@@ -346,10 +374,28 @@ export class InvoiceCardObject {
     this.expandedTexture.needsUpdate = true;
   }
 
-  /** Run small per-frame visual effects (idle bob, grab follow). */
+  /** Run small per-frame visual effects (idle bob, grab pop). */
   tick(t: number): void {
     if (this.state === "idle" || this.state === "hover") {
       this.compactMesh.position.y = Math.sin(t * 0.0009 + this.group.id) * 0.012;
+    } else {
+      this.compactMesh.position.y = 0;
+    }
+    if (this.popping) {
+      const dt = (performance.now() - this.popStart) / 280;
+      if (dt >= 1) {
+        this.popping = false;
+        this.expandedMesh.scale.set(1, 1, 1);
+        this.compactMesh.scale.set(1, 1, 1);
+      } else {
+        // Quick squash-overshoot then settle.
+        const k = 1 + Math.sin(dt * Math.PI) * 0.18;
+        if (this.state === "grabbed") {
+          this.expandedMesh.scale.set(k, k, 1);
+        } else {
+          this.compactMesh.scale.set(k, k, 1);
+        }
+      }
     }
   }
 

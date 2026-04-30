@@ -26,8 +26,10 @@ import {
 } from "./api.ts";
 import type { Card } from "../../shared/types";
 
-const SEMICIRCLE_RADIUS = 1.4;
+const SEMICIRCLE_RADIUS = 1.7;
 const CARD_HEIGHT = 1.5;
+const MAX_LAYOUT_SPAN = 2.4; // radians of arc the cards may occupy (~137°)
+const PER_CARD_SPACING = 0.6;
 
 let renderer: THREE.WebGLRenderer;
 let scene: THREE.Scene;
@@ -395,14 +397,17 @@ function makeSlot(
 }
 
 function makePointerLine(): THREE.Line {
+  // Reach past the furthest card in the semicircle so users can see the
+  // laser actually connect with whatever they are aiming at.
   const geo = new THREE.BufferGeometry().setFromPoints([
     new THREE.Vector3(0, 0, 0),
-    new THREE.Vector3(0, 0, -1.5),
+    new THREE.Vector3(0, 0, -SEMICIRCLE_RADIUS - 0.5),
   ]);
   const mat = new THREE.LineBasicMaterial({
-    color: 0x6366f1,
+    color: 0x60a5fa,
     transparent: true,
-    opacity: 0.7,
+    opacity: 0.85,
+    linewidth: 3,
   });
   return new THREE.Line(geo, mat);
 }
@@ -486,7 +491,10 @@ function layoutCards(): void {
   showPlaceholder(filtered.length === 0);
   if (filtered.length === 0) return;
 
-  const span = Math.max(0.6, Math.min(1.6, filtered.length * 0.55));
+  const span = Math.max(
+    0.6,
+    Math.min(MAX_LAYOUT_SPAN, filtered.length * PER_CARD_SPACING),
+  );
   for (let i = 0; i < filtered.length; i++) {
     const t =
       filtered.length === 1 ? 0 : (i / (filtered.length - 1) - 0.5) * span;
@@ -769,12 +777,17 @@ function onSelectStart(slot: ControllerSlot): void {
     disposeSlotDocument(slot);
     layoutCards();
     slot.grabbed = null;
+    // layoutCards() disposed the previously hovered card; null it so we
+    // don't try to grab a stale reference below.
+    slot.hovered = null;
+    return;
   }
   if (!slot.hovered) return;
   slot.grabbed = slot.hovered;
   slot.grabbed.setState("grabbed");
   spawnDocumentForSlot(slot);
   void enrichCard(slot.grabbed);
+  flashToast(`Inspecting ${slot.grabbed.data.invoice.vendor}`, "ok");
 }
 
 function onSelectEnd(slot: ControllerSlot): void {
