@@ -12,6 +12,7 @@ import { EXRLoader } from "three/examples/jsm/loaders/EXRLoader.js";
 
 import { InvoiceCardObject } from "./card.ts";
 import { AutoPayStream } from "./autopay.ts";
+import { AgentOrb } from "./agent_orb.ts";
 import { InvoiceDocument, Receipt, StampBurst } from "./documents.ts";
 import { enrich } from "./specter.ts";
 import { loadOrCreateKeypair, signApproval, type Keypair } from "./sign.ts";
@@ -63,6 +64,12 @@ const slots: ControllerSlot[] = [];
 const activeReceipts: Receipt[] = [];
 const activeStamps: StampBurst[] = [];
 let autoPayStream: AutoPayStream | null = null;
+let agentOrb: AgentOrb | null = null;
+let agentRunInFlight = false;
+let lastTraceId = 0;
+let traceWatchInterval: number | null = null;
+const GRIP_HOLD_MS = 1500;
+let gripHoldStart = 0; // performance.now ms when EITHER grip went down (0 = not held)
 
 const APPROVE_HOLD_MS = 800;
 const REJECT_HOLD_MS = 800;
@@ -180,6 +187,9 @@ function buildScene(): void {
   mouseControls = new MouseControls(camera, renderer.domElement);
 
   autoPayStream = new AutoPayStream(scene, camera);
+
+  agentOrb = new AgentOrb();
+  scene.add(agentOrb.group);
 }
 
 function makeStudioBackground(): THREE.Texture {
@@ -444,6 +454,7 @@ function startLoop(): void {
         positionDocumentNearCard(slot.document, slot.grabbed);
       }
     }
+    pollGripChargeAgent(t);
     for (const card of cards) card.tick(t);
 
     for (let i = activeStamps.length - 1; i >= 0; i--) {
@@ -456,6 +467,11 @@ function startLoop(): void {
     }
     for (const r of activeReceipts) r.tick();
     autoPayStream?.tick(performance.now());
+
+    if (agentOrb) {
+      agentOrb.tick(performance.now());
+      agentOrb.faceCamera(camera);
+    }
 
     renderer.render(scene, camera);
   });
@@ -689,7 +705,7 @@ function updateController(slot: ControllerSlot, now: number): void {
   // Poll gamepad face buttons for explicit, labeled approve/reject.
   const pad = readGamepad(slot);
 
-  // Thumbstick click cycles the backdrop (works any time, even with no card grabbed).
+  // Thumbstick click cycles the backdrop.
   if (pad) {
     const thumbNow = !!pad.buttons[BTN_THUMB]?.pressed;
     const thumbPrev = !!slot.buttonsPrev[BTN_THUMB];
@@ -699,6 +715,12 @@ function updateController(slot: ControllerSlot, now: number): void {
       });
     }
     slot.buttonsPrev[BTN_THUMB] = thumbNow;
+  }
+
+  // GRIP held on either controller charges + fires the agent.
+  if (pad) {
+    const gripNow = !!pad.buttons[BTN_GRIP]?.pressed;
+    slot.buttonsPrev[BTN_GRIP] = gripNow;
   }
 
   if (pad && slot.grabbed) {
@@ -955,27 +977,106 @@ function easeOut(t: number): number {
 }
 
 // ---------------------------------------------------------------------------
+// Agent run + visualization
+// ---------------------------------------------------------------------------
+
+function pollGripChargeAgent(now: number): void {
+  if (agentRunInFlight) {
+    gripHoldStart = 0;
+    agentOrb?.setChargeProgress(0);
+    return;
+  }
+  const anyGrip =
+    !!slots[0]?.buttonsPrev[BTN_GRIP] || !!slots[1]?.buttonsPrev[BTN_GRIP];
+  if (anyGrip) {
+    if (gripHoldStart === 0) {
+      gripHoldStart = now;
+      agentOrb?.setState("charging");
+    }
+    const progress = Math.min(1, (now - gripHoldStart) / GRIP_HOLD_MS);
+    agentOrb?.setChargeProgress(progress);
+    if (progress >= 1) {
+      gripHoldStart = 0;
+      agentOrb?.setChargeProgress(0);
+      agentOrb?.setState("idle");
+      void runAgentNow("controller GRIP charge");
+    }
+  } else if (gripHoldStart !== 0) {
+    gripHoldStart = 0;
+    agentOrb?.setChargeProgress(0);
+    if (agentOrb && !agentRunInFlight) agentOrb.setState("idle");
+  }
+}
+
+async function runAgentNow(source: string): Promise<void> {
+  if (agentRunInFlight) return;
+  agentRunInFlight = true;
+  setStatus("running agent…", "warn");
+  agentOrb?.setState("thinking");
+  agentOrb?.pushThought(`run triggered via ${source}`);
+
+  startTraceWatcher();
+  try {
+    await resetDemo();
+    autoPayStream?.cancel();
+    lastTraceId = 0;
+    agentOrb?.pushThought("scoring 57 invoices…");
+    const result = await runAgentStub();
+    agentOrb?.pushThought(
+      `${result.auto_paid.length} auto-paid · ${result.escalated.length} escalated`,
+    );
+    flashToast(
+      `Agent: ${result.auto_paid.length} auto-pay · ${result.escalated.length} review`,
+      "ok",
+    );
+    autoPayStream?.play(result.auto_paid);
+    await refreshAll();
+    setStatus("ready", "ok");
+    agentOrb?.setState("done");
+  } catch (err) {
+    setStatus("agent error", "err");
+    flashToast(`Agent error: ${(err as Error).message}`, "err");
+    agentOrb?.pushThought(`error: ${(err as Error).message}`);
+    agentOrb?.setState("idle");
+  } finally {
+    agentRunInFlight = false;
+    stopTraceWatcher();
+  }
+}
+
+function startTraceWatcher(): void {
+  stopTraceWatcher();
+  traceWatchInterval = window.setInterval(async () => {
+    try {
+      const rows = await fetchTrace(60);
+      // /agent/trace returns newest-first; flip so we stream chronologically.
+      const fresh = rows
+        .filter((r) => r.id > lastTraceId)
+        .sort((a, b) => a.id - b.id);
+      for (const r of fresh) {
+        agentOrb?.pushThought(r.line);
+        lastTraceId = Math.max(lastTraceId, r.id);
+      }
+    } catch {
+      /* poll failures are non-fatal */
+    }
+  }, 320);
+}
+
+function stopTraceWatcher(): void {
+  if (traceWatchInterval !== null) {
+    window.clearInterval(traceWatchInterval);
+    traceWatchInterval = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // HUD wiring
 // ---------------------------------------------------------------------------
 
 function bindHud(): void {
-  document.getElementById("run-agent")!.addEventListener("click", async () => {
-    setStatus("running agent…", "warn");
-    try {
-      await resetDemo();
-      autoPayStream?.cancel();
-      const result = await runAgentStub();
-      flashToast(
-        `Agent: ${result.auto_paid.length} auto-pay · ${result.escalated.length} review`,
-        "ok",
-      );
-      autoPayStream?.play(result.auto_paid);
-      await refreshAll();
-      setStatus("ready", "ok");
-    } catch (err) {
-      setStatus("agent error", "err");
-      flashToast(`Agent error: ${(err as Error).message}`, "err");
-    }
+  document.getElementById("run-agent")!.addEventListener("click", () => {
+    void runAgentNow("HUD button");
   });
   document.getElementById("reset-demo")!.addEventListener("click", async () => {
     try {
@@ -984,6 +1085,8 @@ function bindHud(): void {
       currentEscalations = [];
       layoutCards();
       await refreshHud();
+      agentOrb?.pushThought("demo reset");
+      agentOrb?.setState("idle");
       flashToast("Demo reset", "ok");
     } catch (err) {
       flashToast(`Reset failed: ${(err as Error).message}`, "err");

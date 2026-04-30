@@ -527,20 +527,38 @@ def agent_run_stub() -> dict[str, Any]:
 
     This stub exists so a curl smoke test still works and so the HUD button
     can fall back to a deterministic local run if the agent service is down.
-    It runs purely heuristic scoring server-side.
+    It runs purely heuristic scoring server-side and writes a synthetic
+    trace stream so the in-XR Cursor Agent orb has thought events to
+    visualise even when the full SDK pipeline isn't running.
     """
     from heuristics import score_invoice  # type: ignore
 
     auto_paid: list[Invoice] = []
     escalated: list[Card] = []
+    run_id = f"stub-{int(time.time() * 1000)}"
+    step = 0
+
     with db() as conn:
+        def log(line: str) -> None:
+            nonlocal step
+            step += 1
+            conn.execute(
+                "INSERT INTO agent_trace (run_id, step, line, timestamp) VALUES (?, ?, ?, ?)",
+                (run_id, step, line, int(time.time() * 1000)),
+            )
+
         rows = conn.execute(
             "SELECT * FROM invoices WHERE processed = 0 ORDER BY id"
         ).fetchall()
-        for r in rows:
+        log(f"starting heuristic pass over {len(rows)} invoices")
+
+        for idx, r in enumerate(rows, start=1):
             inv = row_to_invoice(r)
             confidence, reason = score_invoice(inv.model_dump())
             if confidence < 0.85:
+                log(
+                    f"escalate {inv.id} {inv.vendor} (conf {confidence:.2f}) — {reason}"
+                )
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO escalations (invoice_id, confidence, reason, created_at)
@@ -552,6 +570,12 @@ def agent_run_stub() -> dict[str, Any]:
                     Card(invoice=inv, confidence=confidence, reason=reason)
                 )
             else:
+                # Sample auto-pay events: first 3 always, then every 8th so
+                # the orb gets a steady drumbeat without 51 redundant lines.
+                if idx <= 3 or idx % 8 == 0:
+                    log(
+                        f"auto-pay {inv.id} {inv.vendor} £{inv.amount_gbp/100:,.2f} — {reason}"
+                    )
                 conn.execute(
                     """
                     INSERT INTO ledger (invoice_id, vendor, amount_gbp, decision, timestamp, trace)
@@ -569,7 +593,15 @@ def agent_run_stub() -> dict[str, Any]:
                     "UPDATE invoices SET processed = 1 WHERE id = ?", (inv.id,)
                 )
                 auto_paid.append(inv)
-    return {"auto_paid": [i.model_dump() for i in auto_paid], "escalated": [c.model_dump() for c in escalated]}
+
+        log(
+            f"done · {len(auto_paid)} auto-paid · {len(escalated)} escalated to XR"
+        )
+    return {
+        "auto_paid": [i.model_dump() for i in auto_paid],
+        "escalated": [c.model_dump() for c in escalated],
+        "trace": [],
+    }
 
 
 # ---------------------------------------------------------------------------
