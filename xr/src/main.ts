@@ -11,6 +11,7 @@ import { RGBELoader } from "three/examples/jsm/loaders/RGBELoader.js";
 import { EXRLoader } from "three/examples/jsm/loaders/EXRLoader.js";
 
 import { InvoiceCardObject } from "./card.ts";
+import { AutoPayStream } from "./autopay.ts";
 import { InvoiceDocument, Receipt, StampBurst } from "./documents.ts";
 import { enrich } from "./specter.ts";
 import { loadOrCreateKeypair, signApproval, type Keypair } from "./sign.ts";
@@ -59,6 +60,7 @@ const slots: ControllerSlot[] = [];
 
 const activeReceipts: Receipt[] = [];
 const activeStamps: StampBurst[] = [];
+let autoPayStream: AutoPayStream | null = null;
 
 const APPROVE_HOLD_MS = 800;
 const REJECT_HOLD_MS = 800;
@@ -174,6 +176,8 @@ function buildScene(): void {
   });
 
   mouseControls = new MouseControls(camera, renderer.domElement);
+
+  autoPayStream = new AutoPayStream(scene, camera);
 }
 
 function makeStudioBackground(): THREE.Texture {
@@ -446,6 +450,7 @@ function startLoop(): void {
       }
     }
     for (const r of activeReceipts) r.tick();
+    autoPayStream?.tick(performance.now());
 
     renderer.render(scene, camera);
   });
@@ -945,10 +950,15 @@ function bindHud(): void {
     setStatus("running agent…", "warn");
     try {
       await resetDemo();
-      await runAgentStub();
+      autoPayStream?.cancel();
+      const result = await runAgentStub();
+      flashToast(
+        `Agent: ${result.auto_paid.length} auto-pay · ${result.escalated.length} review`,
+        "ok",
+      );
+      autoPayStream?.play(result.auto_paid);
       await refreshAll();
       setStatus("ready", "ok");
-      flashToast("Agent run complete", "ok");
     } catch (err) {
       setStatus("agent error", "err");
       flashToast(`Agent error: ${(err as Error).message}`, "err");
@@ -956,6 +966,7 @@ function bindHud(): void {
   });
   document.getElementById("reset-demo")!.addEventListener("click", async () => {
     try {
+      autoPayStream?.cancel();
       await resetDemo();
       currentEscalations = [];
       layoutCards();

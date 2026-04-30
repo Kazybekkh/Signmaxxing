@@ -1,7 +1,12 @@
 // Backend client. Uses /api/* via the Vite proxy so this works on the
 // laptop and on the headset over the same origin.
 
-import type { Card, LedgerEntry, SignedApproval } from "../../shared/types";
+import type {
+  Card,
+  Invoice,
+  LedgerEntry,
+  SignedApproval,
+} from "../../shared/types";
 
 const BASE =
   (import.meta as any).env?.VITE_API_BASE ?? "/api";
@@ -52,8 +57,9 @@ export async function fetchTrace(
 }
 
 export async function runAgentStub(): Promise<{
-  auto_paid: unknown[];
-  escalated: unknown[];
+  auto_paid: Invoice[];
+  escalated: Card[];
+  trace: string[];
 }> {
   return jsonFetch(`/agent/run`, { method: "POST" });
 }
